@@ -1,6 +1,7 @@
 use clap::Parser;
 
 mod cli;
+mod queue;
 
 fn main() {
     let args = cli::Args::parse();
