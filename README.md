@@ -2,23 +2,23 @@
 
 A bounded, in-memory FIFO message queue supporting multiple concurrent
 producers and consumers, built as a systems-programming learning project
-in Rust.
+in Rust. It runs as a small TCP-based message broker: producers and
+consumers reach the queue over the network rather than only from
+within the process.
 
 ## Overview
 
 This project implements a thread-safe message queue with:
 
-- **Configurable producer thread count** — the number of threads writing
+- **Configurable producer thread count** — the number of persistent
+  worker threads accepting incoming produce connections and writing
   messages into the queue.
-- **Configurable consumer thread count** — the number of threads reading
+- **Configurable consumer thread count** — the number of persistent
+  worker threads accepting incoming consume connections and reading
   messages off the queue.
 - A shared, mutually-exclusive internal buffer (`Mutex<VecDeque<T>>`)
   so concurrent modification is safe.
 - Shared ownership of the queue across all threads via `Arc<Queue<T>>`.
-
-The goal isn't just "a queue that works" — it's a queue whose design
-choices are deliberate and explainable, since that's what's actually
-being evaluated for systems roles.
 
 ## Configurable Thread Counts
 
@@ -28,19 +28,25 @@ because the "correct" number of threads is not a constant — it depends
 on the workload:
 
 | Factor | Effect on thread count |
-|---|---|
-| CPU-bound work per message | Cap threads near `std::thread::available_parallelism()`; more threads than cores just adds scheduling overhead. |
-| I/O-bound work per message | Threads spend time blocked/parked, so oversubscribing (more threads than cores) can improve throughput. |
+| --- | --- |
 | Lock contention on the shared buffer | Past a small number of threads, additional threads spend more time waiting on the `Mutex` than doing useful work — throughput can plateau or regress. |
 | Producer:consumer rate mismatch | If producers outpace consumers (or vice versa), skewing the ratio helps, up to the point where the added threads start contending with each other. |
 
-Because contention — not core count — is usually the binding constraint
-for a single-lock design, this project treats thread count as a
-benchmark parameter rather than a fixed value. A benchmarking harness
-(varying producer count, consumer count, message size, and queue
-capacity) is included so the throughput-vs-threads curve, and the
-point where contention dominates, can be measured directly instead of
-assumed.
+## Network Protocol
+
+The server listens on two separate TCP ports (defaults `7878` for
+producing, `7879` for consuming), plain newline-delimited text, no
+new dependencies beyond `clap`:
+
+- **Produce**: connect to the produce port and send one line of text.
+  The server enqueues it (blocking if the queue is full) and responds
+  with `OK\n`, or `ERR ...\n` on failure.
+- **Consume**: connect to the consume port. The server blocks until a
+  message is available, then writes it back as one line (`<message>\n`).
+  An empty queue is a valid state, reported as `EMPTY\n`.
+
+One message per connection — the connection closes after the
+response.
 
 ## Why `Mutex<VecDeque<T>>`
 
@@ -63,11 +69,10 @@ run time: it hands out mutable access via a lock guard
 (`MutexGuard<T>`), and the OS/runtime ensures only one thread holds
 that guard at once. Every other thread attempting to lock blocks until
 the guard is dropped. This is what makes concurrent modification of
-the same `VecDeque<T>` safe — it's the piece of the design that
-actually prevents data races on the buffer itself.
+the same `VecDeque<T>` safe.
 
 Only the buffer is wrapped in the `Mutex` — not the whole `Queue`
-struct — because anything inside the lock boundary is what threads
+struct. This is because anything inside the lock boundary is what threads
 will contend over. Fields that don't need synchronized mutation (e.g.
 a fixed `capacity` set once at construction) stay outside it, since
 locking them would create contention with no correctness benefit.
@@ -123,22 +128,17 @@ Neither substitutes for the other. `Arc` alone would only ever hand out
 shared references (`&T`), which isn't enough to mutate the buffer.
 `Mutex` alone, without `Arc`, can't be shared across threads in the
 first place because of the ownership violation described above. Used
-together, they let the compiler enforce Rust's core guarantee — no
+together, they let the compiler enforce Rust's core guarantee, no
 data races, checked at compile time wherever possible and pushed to a
-runtime lock only where genuinely necessary — without requiring
+runtime lock only where genuinely necessary, without requiring
 `unsafe` anywhere in the queue implementation.
 
 ## Project Structure (WIP)
 
-- `Queue<T>` — core FIFO buffer, `push`/`pop`, blocking via `Condvar`
-  when full/empty.
+- `Queue<T>` — core FIFO buffer. `enqueue` blocks via `Condvar` when
+  full; `dequeue` never blocks — it returns `None` immediately if the
+  queue is empty, since an empty queue is a valid state, not an error.
 - Producer/consumer thread pools — spawned per the configured counts,
   each holding an `Arc::clone` of the queue.
-- Benchmark harness — sweeps thread counts, message size, and capacity
-  to measure throughput and latency.
-
-## Roadmap
-
-1. Single-lock `Mutex<VecDeque<T>> + Condvar` implementation (current).
-2. Two-lock (head/tail) queue to reduce producer/consumer contention.
-3. Lock-free MPMC variant using atomics, as a stretch goal.
+- `server` — the TCP accept-loop/thread-pool layer that connects
+  incoming produce/consume connections to the queue.

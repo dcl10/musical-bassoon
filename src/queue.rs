@@ -3,7 +3,6 @@ use std::sync::{Condvar, Mutex};
 
 pub struct Queue<T> {
     inner: Mutex<VecDeque<T>>,
-    empty: Condvar,
     full: Condvar,
     capacity: usize,
 }
@@ -17,7 +16,6 @@ impl<T> Queue<T> {
     pub fn new(capacity: usize) -> Self {
         Queue {
             inner: Mutex::new(VecDeque::with_capacity(capacity)),
-            empty: Default::default(),
             full: Default::default(),
             capacity,
         }
@@ -46,13 +44,13 @@ impl<T> Queue<T> {
         }
 
         queue.push_back(item);
-        self.empty.notify_one();
         Ok(())
     }
 
     /// ## Description
-    /// Remove an item from the front of the queue. If the queue is empty,
-    /// this will block the calling thread until an item becomes available.
+    /// Remove an item from the front of the queue. Returns `None`
+    /// immediately if the queue is empty rather than blocking — an empty
+    /// queue is a valid state, not an error condition to wait out.
     ///
     /// ## Errors
     /// - An error occurred connecting to the queue (the lock was poisoned).
@@ -62,15 +60,10 @@ impl<T> Queue<T> {
             .lock()
             .map_err(|_| "An error occurred connecting to the queue.")?;
 
-        while queue.is_empty() {
-            queue = self
-                .empty
-                .wait(queue)
-                .map_err(|_| "An error occurred connecting to the queue.")?;
+        let item = queue.pop_front();
+        if item.is_some() {
+            self.full.notify_one();
         }
-
-        let item = queue.pop_front(); // safe: while loop guarantees non-empty
-        self.full.notify_one();
         Ok(item)
     }
 }
