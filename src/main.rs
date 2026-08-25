@@ -1,55 +1,34 @@
 use crate::queue::Queue;
 use clap::Parser;
 use std::sync::Arc;
-use std::thread;
-use std::thread::sleep;
-use std::time::Duration;
 
 mod cli;
 mod queue;
+mod server;
 
 fn main() {
     let args = cli::Args::parse();
 
-    println!("Using {:?} producers", args.n_producers);
-    println!("Using {:?} consumers", args.n_consumers);
-    println!("Using delay of {:?} milliseconds", args.delay);
+    println!("Using {:?} producer threads", args.n_producers);
+    println!("Using {:?} consumer threads", args.n_consumers);
+    println!("Listening for producers on 127.0.0.1:{}", args.produce_port);
+    println!("Listening for consumers on 127.0.0.1:{}", args.consume_port);
 
-    let queue = Arc::new(Queue::<&str>::new(100));
+    let queue = Arc::new(Queue::<String>::new(100));
 
-    loop {
-        for _ in 0..args.n_producers {
-            let producer = Arc::clone(&queue);
-            thread::spawn(move || {
-                let is_added = producer.enqueue("Hello, world!");
-                match is_added {
-                    Ok(_) => {
-                        println!("Message added successfully!");
-                    }
-                    Err(err) => {
-                        println!("Message failed with error: {:?}", err);
-                    }
-                }
-            });
-        }
+    let mut handles = Vec::new();
+    handles.extend(server::spawn_produce_pool(
+        Arc::clone(&queue),
+        args.produce_port,
+        args.n_producers,
+    ));
+    handles.extend(server::spawn_consume_pool(
+        Arc::clone(&queue),
+        args.consume_port,
+        args.n_consumers,
+    ));
 
-        for _ in 0..args.n_consumers {
-            let consumer = Arc::clone(&queue);
-            thread::spawn(move || {
-                let removed = consumer.dequeue();
-                match removed {
-                    Ok(item) => match item {
-                        None => {}
-                        Some(i) => {
-                            println!("Dequeued message: {i}")
-                        }
-                    },
-                    Err(err) => {
-                        println!("Error determining message: {:?}", err);
-                    }
-                }
-            });
-        }
-        sleep(Duration::from_millis(args.delay));
+    for handle in handles {
+        let _ = handle.join();
     }
 }
