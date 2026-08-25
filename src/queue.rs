@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
-struct Queue<T> {
+pub struct Queue<T> {
     inner: Mutex<VecDeque<T>>,
     empty: Condvar,
     full: Condvar,
@@ -32,7 +32,7 @@ impl<T> Queue<T> {
     /// ## Errors
     /// - The queue is full, and you try to add a new item.
     /// - An error occurred connecting to the queue.
-    fn enqueue(&self, item: T) -> Result<(), &str> {
+    pub fn enqueue(&self, item: T) -> Result<(), &str> {
         let inner = self.inner.lock();
         match inner {
             Ok(mut queue) => {
@@ -52,7 +52,7 @@ impl<T> Queue<T> {
     ///
     /// ## Errors
     /// - An error occurred connecting to the queue.
-    fn dequeue(&self) -> Result<Option<T>, &str> {
+    pub fn dequeue(&self) -> Result<Option<T>, &str> {
         let inner = self.inner.lock();
         match inner {
             Ok(mut queue) => {
