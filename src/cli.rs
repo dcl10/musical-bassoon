@@ -7,4 +7,6 @@ pub(crate) struct Args {
     pub(crate) n_producers: usize,
     #[arg(short = 'c', long = "Number of consumers", default_value = "1")]
     pub(crate) n_consumers: usize,
+    #[arg(short = 'd', long = "Delay in milliseconds", default_value = "500")]
+    pub(crate) delay: u64,
 }
