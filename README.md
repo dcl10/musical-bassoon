@@ -29,18 +29,8 @@ on the workload:
 
 | Factor | Effect on thread count |
 | --- | --- |
-| CPU-bound work per message | Cap threads near `std::thread::available_parallelism()`; more threads than cores just adds scheduling overhead. |
-| I/O-bound work per message | Threads spend time blocked/parked, so oversubscribing (more threads than cores) can improve throughput. |
 | Lock contention on the shared buffer | Past a small number of threads, additional threads spend more time waiting on the `Mutex` than doing useful work — throughput can plateau or regress. |
 | Producer:consumer rate mismatch | If producers outpace consumers (or vice versa), skewing the ratio helps, up to the point where the added threads start contending with each other. |
-
-Because contention — not core count — is usually the binding constraint
-for a single-lock design, this project treats thread count as a
-benchmark parameter rather than a fixed value. A benchmarking harness
-(varying producer count, consumer count, message size, and queue
-capacity) is included so the throughput-vs-threads curve, and the
-point where contention dominates, can be measured directly instead of
-assumed.
 
 ## Network Protocol
 
@@ -53,8 +43,7 @@ new dependencies beyond `clap`:
   with `OK\n`, or `ERR ...\n` on failure.
 - **Consume**: connect to the consume port. The server blocks until a
   message is available, then writes it back as one line (`<message>\n`).
-  An empty queue is a valid state, not an error — reported as `EMPTY\n`
-  rather than an `ERR`.
+  An empty queue is a valid state, reported as `EMPTY\n`.
 
 One message per connection — the connection closes after the
 response.
@@ -80,11 +69,10 @@ run time: it hands out mutable access via a lock guard
 (`MutexGuard<T>`), and the OS/runtime ensures only one thread holds
 that guard at once. Every other thread attempting to lock blocks until
 the guard is dropped. This is what makes concurrent modification of
-the same `VecDeque<T>` safe — it's the piece of the design that
-actually prevents data races on the buffer itself.
+the same `VecDeque<T>` safe.
 
 Only the buffer is wrapped in the `Mutex` — not the whole `Queue`
-struct — because anything inside the lock boundary is what threads
+struct. This is because anything inside the lock boundary is what threads
 will contend over. Fields that don't need synchronized mutation (e.g.
 a fixed `capacity` set once at construction) stay outside it, since
 locking them would create contention with no correctness benefit.
@@ -140,9 +128,9 @@ Neither substitutes for the other. `Arc` alone would only ever hand out
 shared references (`&T`), which isn't enough to mutate the buffer.
 `Mutex` alone, without `Arc`, can't be shared across threads in the
 first place because of the ownership violation described above. Used
-together, they let the compiler enforce Rust's core guarantee — no
+together, they let the compiler enforce Rust's core guarantee, no
 data races, checked at compile time wherever possible and pushed to a
-runtime lock only where genuinely necessary — without requiring
+runtime lock only where genuinely necessary, without requiring
 `unsafe` anywhere in the queue implementation.
 
 ## Project Structure (WIP)
@@ -154,11 +142,3 @@ runtime lock only where genuinely necessary — without requiring
   each holding an `Arc::clone` of the queue.
 - `server` — the TCP accept-loop/thread-pool layer that connects
   incoming produce/consume connections to the queue.
-- Benchmark harness — sweeps thread counts, message size, and capacity
-  to measure throughput and latency.
-
-## Roadmap
-
-1. Single-lock `Mutex<VecDeque<T>> + Condvar` implementation (current).
-2. Two-lock (head/tail) queue to reduce producer/consumer contention.
-3. Lock-free MPMC variant using atomics, as a stretch goal.
