@@ -2,23 +2,23 @@
 
 A bounded, in-memory FIFO message queue supporting multiple concurrent
 producers and consumers, built as a systems-programming learning project
-in Rust.
+in Rust. It runs as a small TCP-based message broker: producers and
+consumers reach the queue over the network rather than only from
+within the process.
 
 ## Overview
 
 This project implements a thread-safe message queue with:
 
-- **Configurable producer thread count** — the number of threads writing
+- **Configurable producer thread count** — the number of persistent
+  worker threads accepting incoming produce connections and writing
   messages into the queue.
-- **Configurable consumer thread count** — the number of threads reading
+- **Configurable consumer thread count** — the number of persistent
+  worker threads accepting incoming consume connections and reading
   messages off the queue.
 - A shared, mutually-exclusive internal buffer (`Mutex<VecDeque<T>>`)
   so concurrent modification is safe.
 - Shared ownership of the queue across all threads via `Arc<Queue<T>>`.
-
-The goal isn't just "a queue that works" — it's a queue whose design
-choices are deliberate and explainable, since that's what's actually
-being evaluated for systems roles.
 
 ## Configurable Thread Counts
 
@@ -28,7 +28,7 @@ because the "correct" number of threads is not a constant — it depends
 on the workload:
 
 | Factor | Effect on thread count |
-|---|---|
+| --- | --- |
 | CPU-bound work per message | Cap threads near `std::thread::available_parallelism()`; more threads than cores just adds scheduling overhead. |
 | I/O-bound work per message | Threads spend time blocked/parked, so oversubscribing (more threads than cores) can improve throughput. |
 | Lock contention on the shared buffer | Past a small number of threads, additional threads spend more time waiting on the `Mutex` than doing useful work — throughput can plateau or regress. |
@@ -41,6 +41,23 @@ benchmark parameter rather than a fixed value. A benchmarking harness
 capacity) is included so the throughput-vs-threads curve, and the
 point where contention dominates, can be measured directly instead of
 assumed.
+
+## Network Protocol
+
+The server listens on two separate TCP ports (defaults `7878` for
+producing, `7879` for consuming), plain newline-delimited text, no
+new dependencies beyond `clap`:
+
+- **Produce**: connect to the produce port and send one line of text.
+  The server enqueues it (blocking if the queue is full) and responds
+  with `OK\n`, or `ERR ...\n` on failure.
+- **Consume**: connect to the consume port. The server blocks until a
+  message is available, then writes it back as one line (`<message>\n`).
+  An empty queue is a valid state, not an error — reported as `EMPTY\n`
+  rather than an `ERR`.
+
+One message per connection — the connection closes after the
+response.
 
 ## Why `Mutex<VecDeque<T>>`
 
@@ -130,10 +147,13 @@ runtime lock only where genuinely necessary — without requiring
 
 ## Project Structure (WIP)
 
-- `Queue<T>` — core FIFO buffer, `push`/`pop`, blocking via `Condvar`
-  when full/empty.
+- `Queue<T>` — core FIFO buffer. `enqueue` blocks via `Condvar` when
+  full; `dequeue` never blocks — it returns `None` immediately if the
+  queue is empty, since an empty queue is a valid state, not an error.
 - Producer/consumer thread pools — spawned per the configured counts,
   each holding an `Arc::clone` of the queue.
+- `server` — the TCP accept-loop/thread-pool layer that connects
+  incoming produce/consume connections to the queue.
 - Benchmark harness — sweeps thread counts, message size, and capacity
   to measure throughput and latency.
 
